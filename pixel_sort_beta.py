@@ -44,6 +44,20 @@ from numba import jit
 
 @jit(nopython=True)
 def apply_sorting_effect(image_edit, image, pixel_sort_location, normal_sort_distance, sigma_sort_distance, audio_resampled=None):
+    """
+    Applies the pixel sorting effect to the image using Numba for performance optimization.
+    
+    Args:
+        image_edit (numpy.ndarray): The image array to modify
+        image (numpy.ndarray): The original image array
+        pixel_sort_location (numpy.ndarray): Binary mask indicating where to apply sorting
+        normal_sort_distance (float): Base distance for sorting
+        sigma_sort_distance (float): Standard deviation for random sorting distance
+        audio_resampled (numpy.ndarray, optional): Audio data resampled to image height
+    
+    Returns:
+        numpy.ndarray: The modified image with sorting effects applied
+    """
     height, width = image.shape[:2]
     for i in range(height):
         for j in range(width):
@@ -68,6 +82,18 @@ def apply_sorting_effect(image_edit, image, pixel_sort_location, normal_sort_dis
     return image_edit
 
 def process_audio(audio_path, min_freq=0, max_freq=150, sensitivity=5):
+    """
+    Processes audio file to extract frequency data for image manipulation.
+    
+    Args:
+        audio_path (str): Path to the audio file
+        min_freq (float): Minimum frequency to analyze (Hz)
+        max_freq (float): Maximum frequency to analyze (Hz)
+        sensitivity (float): Audio sensitivity multiplier (1-10)
+    
+    Returns:
+        numpy.ndarray: Normalized audio strength data
+    """
     # Load audio file with reduced sample rate for better performance
     sound_data, sr = librosa.load(audio_path, sr=22050)
     
@@ -93,6 +119,22 @@ def process_audio(audio_path, min_freq=0, max_freq=150, sensitivity=5):
     return avg_strength
 
 def apply_pixel_sorting(image_path, sigma1=8, sigma2=2, num_sorted=100000, audio_data=None):
+    """
+    Main function to apply pixel sorting effect to an image with optional audio reactivity.
+    
+    Args:
+        image_path (str): Path to the input image file
+        sigma1 (float): Edge detection sensitivity (larger values = more edges)
+        sigma2 (float): Detail level sensitivity (larger values = more details)
+        num_sorted (int): Number of pixels to sort
+        audio_data (numpy.ndarray, optional): Audio data for reactive effects
+    
+    Returns:
+        numpy.ndarray: The processed image with pixel sorting effects
+    
+    Raises:
+        ValueError: If unsupported image format is provided
+    """
     # Check file format
     file_ext = image_path.lower().split('.')[-1]
     if file_ext not in ['png', 'jpg', 'jpeg']:
