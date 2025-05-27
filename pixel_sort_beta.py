@@ -4,6 +4,7 @@ import numpy as np
 import librosa
 import scipy
 import random
+from numba import jit
 
 #######################################################################################
 
@@ -41,32 +42,141 @@ import random
 
 #######################################################################################
 
+@jit(nopython=True)
+def apply_sorting_effect(image_edit, image, pixel_sort_location, normal_sort_distance, sigma_sort_distance, audio_resampled=None):
+    height, width = image.shape[:2]
+    for i in range(height):
+        for j in range(width):
+            if pixel_sort_location[i, j, 0] == 1:
+                if audio_resampled is not None:
+                    sort_distance = int(np.random.normal(
+                        normal_sort_distance * (1 + audio_resampled[i]),
+                        sigma_sort_distance
+                    ))
+                else:
+                    sort_distance = int(np.random.normal(
+                        normal_sort_distance,
+                        sigma_sort_distance
+                    ))
+                
+                end_sort_point = min(i + sort_distance, height - 1)
+                if end_sort_point > i:
+                    image_edit[i:end_sort_point, j] = np.mean(
+                        np.stack([image[i, j], image[i:end_sort_point, j]]),
+                        axis=0
+                    ).astype(np.uint8)
+    return image_edit
 
+def process_audio(audio_path, min_freq=0, max_freq=150, sensitivity=5):
+    # Load audio file with reduced sample rate for better performance
+    sound_data, sr = librosa.load(audio_path, sr=22050)
+    
+    # Calculate STFT with optimized parameters
+    f, t, Zxx = scipy.signal.stft(
+        sound_data,
+        fs=sr,
+        nperseg=1024,
+        noverlap=512
+    )
+    
+    # Vectorized frequency range selection
+    freq_mask = (f >= min_freq) & (f <= max_freq)
+    if not np.any(freq_mask):
+        return np.ones(len(t))  # Return neutral data if no frequencies in range
+    
+    # Vectorized strength calculation
+    avg_strength = np.abs(Zxx[freq_mask]).mean(axis=0)
+    
+    # Normalize and apply sensitivity
+    avg_strength = (avg_strength / avg_strength.max()) ** (1 / sensitivity)
+    
+    return avg_strength
 
+def apply_pixel_sorting(image_path, sigma1=8, sigma2=2, num_sorted=100000, audio_data=None):
+    # Check file format
+    file_ext = image_path.lower().split('.')[-1]
+    if file_ext not in ['png', 'jpg', 'jpeg']:
+        raise ValueError("Unsupported image format. Please use PNG or JPEG files.")
+    
+    # Load and preprocess image
+    image = plt.imread(image_path)
+    
+    # Handle color ranges
+    if image.dtype == np.float32 or image.dtype == np.float64:
+        image = (image * 255).astype(np.uint8)
+    
+    # Ensure correct number of channels based on format
+    if file_ext == 'png' and image.shape[2] == 3:
+        # Convert RGB PNG to RGBA
+        alpha = np.full((image.shape[0], image.shape[1], 1), 255, dtype=np.uint8)
+        image = np.concatenate([image, alpha], axis=2)
+    elif file_ext in ['jpg', 'jpeg'] and image.shape[2] == 4:
+        # Convert RGBA JPEG to RGB
+        image = image[:, :, :3]
+    
+    # Create a copy for editing
+    image_edit = image.copy()
+    
+    # Convert to grayscale using vectorized operations
+    grayscale_rgb_weights = np.array([0.2126, 0.7152, 0.0722])
+    image_grayscale = np.sum(image[:, :, :3] * grayscale_rgb_weights, axis=2).astype(np.uint8)
+    
+    # Calculate probability map using optimized gaussian filters
+    probability_map = scipy.ndimage.gaussian_filter(image_grayscale, sigma1) - \
+                     scipy.ndimage.gaussian_filter(image_grayscale, sigma2)
+    probability_map = np.clip(probability_map, 0, 255)
+    
+    # Process audio data if provided
+    audio_resampled = None
+    if audio_data is not None:
+        audio_resampled = scipy.signal.resample(audio_data, image.shape[0])
+        audio_resampled = (audio_resampled - audio_resampled.min()) / (audio_resampled.max() - audio_resampled.min())
+        probability_map = np.clip(probability_map * (1 + audio_resampled[:, np.newaxis]), 0, 255)
+    
+    # Generate random points more efficiently
+    height, width = image_grayscale.shape
+    total_pixels = height * width
+    num_points = min(num_sorted, total_pixels)
+    
+    # Use numpy's random choice for better performance
+    indices = np.random.choice(
+        total_pixels,
+        size=num_points,
+        p=probability_map.flatten() / probability_map.sum()
+    )
+    
+    # Convert indices to 2D coordinates
+    rows = indices // width
+    cols = indices % width
+    
+    # Create pixel sort location array with matching channels
+    pixel_sort_location = np.zeros((height, width, image.shape[2]), dtype=np.uint8)
+    pixel_sort_location[rows, cols] = 1
+    
+    # Calculate sort distances
+    normal_sort_distance = height * 0.03
+    sigma_sort_distance = height * 0.01
+    
+    # Apply sorting effect using optimized function
+    image_edit = apply_sorting_effect(
+        image_edit,
+        image,
+        pixel_sort_location,
+        normal_sort_distance,
+        sigma_sort_distance,
+        audio_resampled
+    )
+    
+    return image_edit
 
-
-
-
-image=np.array(plt.imread("nameofyourimage.jpg"))# .jpg image that will be used for editing.
-image_edit=image                                 # this will be the edited image, so original copy isn't changed
-grayscale_rgb_weights=[0.2126, 0.7152, 0.0722]   # color weights used for manually calculating gray scale.
-image_grayscale=(image[:,:,0]*grayscale_rgb_weights[0]+image[:,:,1]*grayscale_rgb_weights[1]+image[:,:,2]*grayscale_rgb_weights[2]).astype(int) #calculating grayscale
-
-sigma1=8 # used for calculating probability map (both need to be positive or 0)
-sigma2=2 # sigma1 > sigma2 ~= more attention to edges/big shapes in map, sigma1 < sigma2 ~= more attention to detail 
-probability_map=scipy.ndimage.gaussian_filter(image_grayscale,sigma1)-scipy.ndimage.gaussian_filter(image_grayscale,sigma2)
-probability_map[probability_map<0]=0
-probability_map[probability_map>255]=255
-
-#plt.imshow(probability_map,cmap='gray') This plot will show the probabilty map
-#plt.show()
-
-
-
-
-
-
-
+# Example usage
+# if __name__ == '__main__':
+#     image_path = "nameofyourimage.jpg"
+#     image_edit = apply_pixel_sorting(image_path)
+#     plt.axis('off')
+#     plt.imshow(image_edit / 255)
+#     plt.savefig("nameofyoureditedimage.jpg", bbox_inches='tight', pad_inches=0, dpi=100)
+#     plt.show()
 
 ###############################################################################################
 # this section is just for extra info on probability map, not needed but is kind of neat. may be helpful for sorting out points
@@ -82,42 +192,7 @@ probability_map[probability_map>255]=255
 
 
 
-num_sorted=100000 # tries to get this many pixel sorting points
-max_iterations=10000000 # if it can not get the desired amount of pixel sorting points, for loop will terminated after this many runs
 
-pixel_sort_location=np.zeros((image.shape[0],image.shape[1],image.shape[2])) # this matrix is a log of points that will be used for pixel sorting
-pixel_sort_counter=0                      # this keeps track of how many points you currently have for sorting in the for loop
-normal_sort_distance=image.shape[0]*0.03  # this is the mean length of pixel sorting, as a percentage of vertical pixels in the image
-sigma_sort_distance=image.shape[0]*0.01   # this is the standard deviation of the pixel sorting length, as a percentage of the vertical pixels in the image
-
-for i in range(max_iterations):
-    d0=random.randint(0,image_grayscale.shape[0]-1) # d0 and d1 are a random point to test on probability map
-    d1=random.randint(0,image_grayscale.shape[1]-1)
-    value=random.randint(1,255)                     # if value <= probability_map[d0,d1], point [d0,d1] will be logged to be sorted
-    if probability_map[d0,d1]>=value:
-        if pixel_sort_location[d0,d1,0]!=1:         # this makes sure a point isn't logged twice
-            pixel_sort_location[d0,d1,:]=1          # logging the point for sorting at a later time
-            pixel_sort_counter=pixel_sort_counter+1 # counting how many sortings points are currently had
-    if pixel_sort_counter==num_sorted:              # breaks the loop when the goal amount of sorting points is met
-        pixel_sort_counter=0
-        print(str(num_sorted)+' sorted')
-        break
-    if i==max_iterations-1:                         # this the end of the for loop when the max iteration limit is met, tells you how many points were selected
-        print(str(pixel_sort_counter)+' sorted')
-        pixel_sort_counter=0
-    
-
-for i in range(image.shape[0]):                     # nested for loop goes through every point in the image to see if it was logged for sorting
-    for j in range(image.shape[1]):                 # this is where the sorting happens
-        if pixel_sort_location[i,j,0]==1:           # this if states checks if a point was logged
-            sort_distance=np.array(random.gauss(normal_sort_distance,sigma_sort_distance)).astype(int) # randomly calculate the distance of each pixel sort on a normal distrobution
-            end_sort_point=i+sort_distance          # end point for the sort
-            if end_sort_point>=image.shape[0]:      # these two if statements make sure the end point is within the image
-                end_sort_point=image.shape[0]-1
-            if end_sort_point<0:
-                end_sort_point=0
-            for k in range(i,end_sort_point):       # this for loop goes through every pixel along a sort
-                    image_edit[k,j,:]=((image[i,j,:]+image[k,j,:])/2).astype(int) # generates the color for each pixel along the sort
 
 ###################################################################################################################################################
 # this part of the script just saves the edited image to your computer
@@ -127,17 +202,16 @@ for i in range(image.shape[0]):                     # nested for loop goes throu
                                                # also scale_factor. then mutiply scale_factor by the dpi value in plt.savefig
                                                # it still may not be exactly the same dimension but it will be really close
 
+# plt.imshow(image_edit/255)
+
 plt.axis('off')               
-plt.imshow(image_edit/255)
+# plt.imshow(image_edit/255)
 plt.savefig("nameofyoureditedimage.jpg", bbox_inches='tight',pad_inches=0,dpi=100) # this line is what actually save the edited image
-plt.show()
-                
-            
-        
 
 
-    
-        
+
+
+
 
 
 
